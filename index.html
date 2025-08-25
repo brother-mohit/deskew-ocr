@@ -7,7 +7,7 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
     #canvasContainer { position: relative; display: inline-block; }
-    #canvasOutput { border: 1px solid #333; }
+    #canvasOutput, #canvasResult { border: 1px solid #333; max-width: 100%; }
     .point {
       width: 12px; height: 12px; border-radius: 50%;
       background: red; position: absolute; cursor: move;
@@ -18,8 +18,8 @@
 <body>
   <h2>Auto Deskew & Perspective Correction</h2>
   <input type="file" id="fileInput" accept="image/*"><br><br>
-  <button onclick="autoDeskew()">🔄 Auto Deskew</button>
-  <button onclick="applyPerspective()">📐 Apply Perspective</button>
+  <button id="deskewBtn">🔄 Auto Deskew</button>
+  <button id="perspectiveBtn">📐 Apply Perspective</button>
   <div id="canvasContainer">
     <canvas id="canvasOutput"></canvas>
   </div>
@@ -31,10 +31,18 @@
     let points = [];
     let draggingPoint = null;
 
+    // Wait until OpenCV.js is ready
     cv['onRuntimeInitialized'] = () => {
-      document.getElementById('fileInput').addEventListener('change', (e) => {
+      console.log("✅ OpenCV.js loaded");
+
+      const fileInput = document.getElementById('fileInput');
+      const deskewBtn = document.getElementById('deskewBtn');
+      const perspectiveBtn = document.getElementById('perspectiveBtn');
+
+      fileInput.addEventListener('change', (e) => {
         let file = e.target.files[0];
         if (!file) return;
+
         let img = new Image();
         img.onload = () => {
           displayCanvas = document.getElementById('canvasOutput');
@@ -43,13 +51,18 @@
           displayCanvas.height = img.height;
           ctx.drawImage(img, 0, 0);
 
-          srcMat = cv.imread(img);
+          // Load into OpenCV Mat
+          if (srcMat) srcMat.delete();
+          srcMat = cv.imread(displayCanvas);
 
           // Place draggable 4 points initially at corners
           initPoints(img.width, img.height);
         };
         img.src = URL.createObjectURL(file);
       });
+
+      deskewBtn.onclick = autoDeskew;
+      perspectiveBtn.onclick = applyPerspective;
     };
 
     // ---- Initialize 4 draggable points for perspective ----
@@ -91,6 +104,8 @@
 
     // ---- AUTO DESKEW USING HOUGH LINES ----
     function autoDeskew() {
+      if (!srcMat) return;
+
       let gray = new cv.Mat();
       cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY, 0);
       cv.threshold(gray, gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
@@ -99,12 +114,14 @@
       cv.HoughLines(gray, lines, 1, Math.PI / 180, 150, 0, 0);
 
       let angle = 0.0;
-      for (let i = 0; i < lines.rows; ++i) {
-        let rho = lines.data32F[i*2];
-        let theta = lines.data32F[i*2+1];
-        angle += (theta - Math.PI/2); // deviation from vertical
+      if (lines.rows > 0) {
+        for (let i = 0; i < lines.rows; ++i) {
+          let rho = lines.data32F[i*2];
+          let theta = lines.data32F[i*2+1];
+          angle += (theta - Math.PI/2); // deviation from vertical
+        }
+        angle = angle / lines.rows * (180 / Math.PI);
       }
-      angle = angle / lines.rows * (180 / Math.PI);
 
       let center = new cv.Point(srcMat.cols/2, srcMat.rows/2);
       let M = cv.getRotationMatrix2D(center, angle, 1);
@@ -113,12 +130,13 @@
 
       cv.imshow("canvasResult", dst);
 
-      gray.delete(); lines.delete(); dst.delete();
+      gray.delete(); lines.delete(); dst.delete(); M.delete();
     }
 
     // ---- MANUAL PERSPECTIVE CORRECTION ----
     function applyPerspective() {
-      if (points.length < 4) return;
+      if (!srcMat || points.length < 4) return;
+
       let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
         points[0].x, points[0].y,
         points[1].x, points[1].y,
